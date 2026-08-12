@@ -1,100 +1,236 @@
-# Copyright 2022 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+terraform {
+  required_version = ">= 1.5.0"
 
-# Definition of local variables
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.region
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 locals {
-  base_apis = [
-    "container.googleapis.com",
-    "monitoring.googleapis.com",
-    "cloudtrace.googleapis.com",
-    "cloudprofiler.googleapis.com"
-  ]
-  memorystore_apis = ["redis.googleapis.com"]
-  cluster_name     = google_container_cluster.my_cluster.name
+  azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
 }
 
-# Enable Google Cloud APIs
-module "enable_google_apis" {
-  source  = "terraform-google-modules/project-factory/google//modules/project_services"
-  version = "~> 18.0"
+resource "aws_vpc" "this" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
 
-  project_id                  = var.gcp_project_id
-  disable_services_on_destroy = false
-
-  # activate_apis is the set of base_apis and the APIs required by user-configured deployment options
-  activate_apis = concat(local.base_apis, var.memorystore ? local.memorystore_apis : [])
+  tags = {
+    Name = var.cluster_name
+  }
 }
 
-# Create GKE cluster
-resource "google_container_cluster" "my_cluster" {
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
 
-  name     = var.name
-  location = var.region
+  tags = {
+    Name = "${var.cluster_name}-igw"
+  }
+}
 
-  # Enable autopilot for this cluster
-  enable_autopilot = true
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
 
-  # Set an empty ip_allocation_policy to allow autopilot cluster to spin up correctly
-  ip_allocation_policy {
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
   }
 
-  # Avoid setting deletion_protection to false
-  # until you're ready (and certain you want) to destroy the cluster.
-  # deletion_protection = false
-
-  depends_on = [
-    module.enable_google_apis
-  ]
+  tags = {
+    Name = "${var.cluster_name}-public-rt"
+  }
 }
 
-# Get credentials for cluster
-module "gcloud" {
-  source  = "terraform-google-modules/gcloud/google"
-  version = "~> 4.0"
+resource "aws_subnet" "public" {
+  count                   = var.az_count
+  vpc_id                  = aws_vpc.this.id
+  availability_zone       = local.azs[count.index]
+  map_public_ip_on_launch = true
 
-  platform              = "linux"
-  additional_components = ["kubectl", "beta"]
+  # Keep it simple: /24s within the VPC CIDR.
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index)
 
-  create_cmd_entrypoint = "gcloud"
-  # Module does not support explicit dependency
-  # Enforce implicit dependency through use of local variable
-  create_cmd_body = "container clusters get-credentials ${local.cluster_name} --zone=${var.region} --project=${var.gcp_project_id}"
+  tags = {
+    Name = "${var.cluster_name}-public-${local.azs[count.index]}"
+
+    # Required for AWS Load Balancer integration with EKS.
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/role/alb"                    = "1"
+  }
 }
 
-# Apply YAML kubernetes-manifest configurations
-resource "null_resource" "apply_deployment" {
-  provisioner "local-exec" {
-    interpreter = ["bash", "-exc"]
-    command     = "kubectl apply -k ${var.filepath_manifest} -n ${var.namespace}"
+resource "aws_route_table_association" "public" {
+  count          = var.az_count
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_security_group" "eks_cluster" {
+  name        = "${var.cluster_name}-eks-cluster-sg"
+  description = "EKS cluster security group"
+  vpc_id      = aws_vpc.this.id
+
+  # Minimal public-only setup: allow cluster access from within the VPC CIDR.
+  ingress {
+    description = "Kubernetes API from VPC"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
   }
 
-  depends_on = [
-    module.gcloud
-  ]
-}
-
-# Wait condition for all Pods to be ready before finishing
-resource "null_resource" "wait_conditions" {
-  provisioner "local-exec" {
-    interpreter = ["bash", "-exc"]
-    command     = <<-EOT
-    kubectl wait --for=condition=AVAILABLE apiservice/v1beta1.metrics.k8s.io --timeout=180s
-    kubectl wait --for=condition=ready pods --all -n ${var.namespace} --timeout=280s
-    EOT
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
+  tags = {
+    Name = "${var.cluster_name}-eks-cluster-sg"
+  }
+}
+
+resource "aws_security_group" "eks_nodes" {
+  name        = "${var.cluster_name}-eks-nodes-sg"
+  description = "EKS nodes security group"
+  vpc_id      = aws_vpc.this.id
+
+  # Minimal public-only setup: allow node-to-node + cluster communication within the VPC.
+  ingress {
+    description = "All traffic within VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-eks-nodes-sg"
+  }
+}
+
+resource "aws_iam_role" "eks_cluster" {
+  name = "${var.cluster_name}-eks-cluster-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
+  role       = aws_iam_role.eks_cluster.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSServicePolicy" {
+  role       = aws_iam_role.eks_cluster.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+}
+
+resource "aws_iam_role" "eks_nodes" {
+  name = "${var.cluster_name}-eks-node-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_AmazonEKSWorkerNodePolicy" {
+  role       = aws_iam_role.eks_nodes.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_AmazonEC2ContainerRegistryReadOnly" {
+  role       = aws_iam_role.eks_nodes.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_AmazonEKS_CNI_Policy" {
+  role       = aws_iam_role.eks_nodes.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_eks_cluster" "this" {
+  name     = var.cluster_name
+  role_arn = aws_iam_role.eks_cluster.arn
+
+  vpc_config {
+    subnet_ids              = aws_subnet.public[*].id
+    endpoint_public_access  = true
+    endpoint_private_access = false
+    security_group_ids      = [aws_security_group.eks_cluster.id]
+  }
+
+  version = var.kubernetes_version
+
   depends_on = [
-    resource.null_resource.apply_deployment
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSServicePolicy
+  ]
+
+  tags = {
+    Name = var.cluster_name
+  }
+}
+
+resource "aws_eks_node_group" "this" {
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.cluster_name}-nodes"
+  node_role_arn   = aws_iam_role.eks_nodes.arn
+  subnet_ids      = aws_subnet.public[*].id
+
+  instance_types = [var.node_instance_type]
+  disk_size      = var.node_disk_size_gb
+
+  scaling_config {
+    min_size     = var.node_min_size
+    max_size     = var.node_max_size
+    desired_size = var.node_desired_size
+  }
+
+  ami_type      = "AL2023_x86_64_STANDARD"
+  capacity_type = "ON_DEMAND"
+
+  depends_on = [
+    aws_eks_cluster.this
   ]
 }
+

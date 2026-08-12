@@ -14,7 +14,7 @@
 
 apiVersion: v2
 name: onlineboutique
-description: A Helm chart for Kubernetes for Online Boutique
+description: Helm chart converted from release/kubernetes-manifests.yaml
 
 # A chart can be either an 'application' or a 'library' chart.
 #

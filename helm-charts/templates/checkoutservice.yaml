@@ -1,0 +1,73 @@
+{{- if .Values.checkoutService.create }}
+{{- if .Values.serviceAccounts.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.checkoutService.name }}
+  namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.checkoutService.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.checkoutService.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.checkoutService.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.checkoutService.name }}
+    spec:
+      serviceAccountName: {{ include "onlineboutique.serviceAccountName" (dict "Values" .Values "serviceName" .Values.checkoutService.name) }}
+      {{- include "onlineboutique.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: server
+          {{- include "onlineboutique.containerSecurityContext" . | nindent 10 }}
+          image: {{ include "onlineboutique.image" (dict "Values" .Values "Chart" .Chart "imageName" .Values.checkoutService.name) }}
+          ports:
+          - containerPort: 5050
+          readinessProbe:
+            grpc:
+              port: 5050
+          livenessProbe:
+            grpc:
+              port: 5050
+          env:
+          - name: PORT
+            value: "5050"
+          - name: PRODUCT_CATALOG_SERVICE_ADDR
+            value: "{{ .Values.productCatalogService.name }}:3550"
+          - name: SHIPPING_SERVICE_ADDR
+            value: "{{ .Values.shippingService.name }}:50051"
+          - name: PAYMENT_SERVICE_ADDR
+            value: "{{ .Values.paymentService.name }}:50051"
+          - name: EMAIL_SERVICE_ADDR
+            value: "{{ .Values.emailService.name }}:5000"
+          - name: CURRENCY_SERVICE_ADDR
+            value: "{{ .Values.currencyService.name }}:7000"
+          - name: CART_SERVICE_ADDR
+            value: "{{ .Values.cartService.name }}:7070"
+          resources:
+            {{- toYaml .Values.checkoutService.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.checkoutService.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.checkoutService.name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Values.checkoutService.name }}
+  ports:
+  - name: grpc
+    port: 5050
+    targetPort: 5050
+{{- end }}

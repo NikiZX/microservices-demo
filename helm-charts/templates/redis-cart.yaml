@@ -1,0 +1,57 @@
+{{- if .Values.redisCart.create }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.redisCart.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.redisCart.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.redisCart.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.redisCart.name }}
+    spec:
+      {{- include "onlineboutique.podSecurityContext" . | nindent 6 }}
+      containers:
+      - name: redis
+        {{- include "onlineboutique.containerSecurityContext" . | nindent 8 }}
+        image: {{ .Values.redisCart.image }}
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          periodSeconds: 5
+          tcpSocket:
+            port: 6379
+        livenessProbe:
+          periodSeconds: 5
+          tcpSocket:
+            port: 6379
+        volumeMounts:
+        - mountPath: /data
+          name: redis-data
+        resources:
+          {{- toYaml .Values.redisCart.resources | nindent 10 }}
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.redisCart.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.redisCart.name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Values.redisCart.name }}
+  ports:
+  - name: tcp-redis
+    port: 6379
+    targetPort: 6379
+{{- end }}
