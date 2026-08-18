@@ -1,0 +1,68 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  cd:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push images to ECR
+        env:
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+        run: |
+          TAG=${{ github.sha }}
+          SERVICES=(
+            "adservice:src/adservice"
+            "cartservice:src/cartservice/src"
+            "checkoutservice:src/checkoutservice"
+            "currencyservice:src/currencyservice"
+            "emailservice:src/emailservice"
+            "frontend:src/frontend"
+            "paymentservice:src/paymentservice"
+            "productcatalogservice:src/productcatalogservice"
+            "recommendationservice:src/recommendationservice"
+            "shippingservice:src/shippingservice"
+          )
+
+          for entry in "${SERVICES[@]}"; do
+            name="${entry%%:*}"
+            context="${entry##*:}"
+            image="${ECR_REGISTRY}/${name}:${TAG}"
+            echo "Building and pushing ${image}..."
+            docker build -t "$image" "$context"
+            docker push "$image"
+          done
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ vars.EKS_CLUSTER }}" \
+            --region "${{ vars.AWS_REGION }}"
+
+      - name: Helm upgrade
+        run: |
+          helm upgrade --install "${{ vars.HELM_RELEASE }}" ./helm-charts \
+            --create-namespace \
+            -n "${{ vars.HELM_NAMESPACE }}" \
+            --set images.repository="${{ vars.ECR_REGISTRY }}" \
+            --set images.tag="${{ github.sha }}" \
+            --wait \
+            --timeout 10m
