@@ -4,6 +4,9 @@
 images:
   repository: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo
   tag: ""
+  # false => repository/service:tag (Artifact Registry / one ECR repo per service)
+  # true  => repository:service-tag (single ECR repository)
+  singleRepository: false
 
 serviceAccounts:
   create: true

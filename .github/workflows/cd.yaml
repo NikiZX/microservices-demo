@@ -26,9 +26,20 @@ jobs:
 
       - name: Build and push images to ECR
         env:
+          # Must be ONLY the repo URI, e.g.:
+          # 353385935853.dkr.ecr.us-east-1.amazonaws.com/google-microservice-demo67
           ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
         run: |
+          set -euo pipefail
           TAG=${{ github.sha }}
+
+          if [[ -z "${ECR_REGISTRY}" || "${ECR_REGISTRY}" == *" "* || "${ECR_REGISTRY}" != *".dkr.ecr."* ]]; then
+            echo "ECR_REGISTRY looks invalid: '${ECR_REGISTRY}'"
+            echo "Set GitHub variable ECR_REGISTRY to exactly:"
+            echo "  353385935853.dkr.ecr.us-east-1.amazonaws.com/google-microservice-demo67"
+            exit 1
+          fi
+
           SERVICES=(
             "adservice:src/adservice"
             "cartservice:src/cartservice/src"
@@ -42,10 +53,11 @@ jobs:
             "shippingservice:src/shippingservice"
           )
 
+          # Single ECR repo: tag = <service>-<sha>
           for entry in "${SERVICES[@]}"; do
             name="${entry%%:*}"
             context="${entry##*:}"
-            image="${ECR_REGISTRY}/${name}:${TAG}"
+            image="${ECR_REGISTRY}:${name}-${TAG}"
             echo "Building and pushing ${image}..."
             docker build -t "$image" "$context"
             docker push "$image"
@@ -64,5 +76,6 @@ jobs:
             -n "${{ vars.HELM_NAMESPACE }}" \
             --set images.repository="${{ vars.ECR_REGISTRY }}" \
             --set images.tag="${{ github.sha }}" \
+            --set images.singleRepository=true \
             --wait \
             --timeout 10m

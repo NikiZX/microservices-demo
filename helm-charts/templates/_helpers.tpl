@@ -62,7 +62,12 @@ securityContext:
 Image reference for microservices
 */}}
 {{- define "onlineboutique.image" -}}
-{{- printf "%s/%s:%s" .Values.images.repository .imageName (.Values.images.tag | default .Chart.AppVersion) -}}
+{{- $tag := (.Values.images.tag | default .Chart.AppVersion) -}}
+{{- if .Values.images.singleRepository -}}
+{{- printf "%s:%s-%s" .Values.images.repository .imageName $tag -}}
+{{- else -}}
+{{- printf "%s/%s:%s" .Values.images.repository .imageName $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
