@@ -17,7 +17,8 @@ securityContext:
 frontend:
   create: true
   name: frontend
-  externalService: true
+  # Prefer ALB Ingress on EKS; do not create a separate LoadBalancer Service by default.
+  externalService: false
   enableProfiler: "0"
   shoppingAssistantServiceAddr: shoppingassistantservice:80
   loadBalancer:
@@ -33,16 +34,13 @@ frontend:
     #   service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
     annotations: {}
   ingress:
-    # Creates an Ingress for the frontend. On EKS with the AWS Load Balancer
-    # Controller installed, set ingressClassName to "alb" to provision an
-    # Application Load Balancer (ALB).
-    create: false
+    # Default: ALB Ingress for EKS (requires AWS Load Balancer Controller).
+    create: true
     ingressClassName: alb
-    # Recommended annotations for an ALB with IP targets:
-    annotations: {}
-      # alb.ingress.kubernetes.io/scheme: internet-facing
-      # alb.ingress.kubernetes.io/target-type: ip
-      # alb.ingress.kubernetes.io/healthcheck-path: /_healthz
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/healthcheck-path: /_healthz
     # Optional host for the Ingress rule. Leave empty to match all hosts.
     host: ""
   resources:
