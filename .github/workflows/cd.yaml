@@ -78,5 +78,11 @@ jobs:
             --set images.repository="${{ vars.ECR_REGISTRY }}" \
             --set images.tag="${{ github.sha }}" \
             --set images.singleRepository=true \
+            --set frontend.externalService=false \
+            --set frontend.ingress.create=true \
+            --set frontend.ingress.ingressClassName=alb \
+            --set 'frontend.ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing' \
+            --set 'frontend.ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip' \
+            --set 'frontend.ingress.annotations.alb\.ingress\.kubernetes\.io/healthcheck-path=/_healthz' \
             --wait \
             --timeout 10m
