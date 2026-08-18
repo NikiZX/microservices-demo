@@ -47,6 +47,7 @@ jobs:
             "currencyservice:src/currencyservice"
             "emailservice:src/emailservice"
             "frontend:src/frontend"
+            "loadgenerator:src/loadgenerator"
             "paymentservice:src/paymentservice"
             "productcatalogservice:src/productcatalogservice"
             "recommendationservice:src/recommendationservice"
